@@ -33,7 +33,6 @@
 |--------------|---------------|------------------|
 | ![popup](icons/popup.png) | ![settings](icons/setting.png) | ![rest](icons/rest_alarm.png) |
 
-*(Replace the placeholders above with your own images.)*
 
 ---
 
