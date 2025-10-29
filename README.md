@@ -83,14 +83,20 @@
 ---
 
 ## 🧩 File Structure
+
+```text
+.
 ├── manifest.json
-├── background.js # service worker (classification + rest alarm)
-├── classify.js # Gemini API call & heuristics
-├── content.js # in-page modal + toast
-├── popup.html / popup.js
-├── options.html / options.js
+├── background.js        # Service worker (classification + rest alarm)
+├── classify.js          # Gemini API call & heuristics
+├── content.js           # In-page modal + toast
+├── popup.html
+├── popup.js
+├── options.html
+├── options.js
 ├── icons/
 └── README.md
+
 
 
 ---
