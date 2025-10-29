@@ -84,7 +84,6 @@
 
 ## 🧩 File Structure
 
-```text
 .
 ├── manifest.json
 ├── background.js        # Service worker (classification + rest alarm)
