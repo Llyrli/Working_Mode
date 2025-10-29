@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Working Mode",
+  "description": "用 Gemini 分类当前页面为工作/休息并定时提醒；像番茄钟一样统计各类网站时间。",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "Working Mode",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "permissions": [
+    "storage",
+    "tabs",
+    "alarms",
+    "notifications"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+
+}

@@ -1,0 +1,459 @@
+// background.js — fine totals always include all categories; meta (umbrella mapping) for legend grouping.
+
+self.addEventListener("error", (e) => console.error("[Working Mode] Global error:", e?.message, e?.error));
+self.addEventListener("unhandledrejection", (e) => console.error("[Working Mode] Unhandled rejection:", e?.reason));
+console.log("[Working Mode] Service Worker loaded at", new Date().toISOString());
+
+import { classifyPage } from "./classify.js";
+
+/* ===== Defaults ===== */
+const DEFAULT_SETTINGS = {
+  enabled: true,
+  intervalMinutes: 5,
+  apiKey: "",
+  model: "gemini-2.0-flash",
+
+  categoriesConfig: [
+    { name: "work", umbrella: "work" },
+    { name: "study", umbrella: "work" },
+    { name: "utility", umbrella: "work" },
+    { name: "social", umbrella: "rest" },
+    { name: "entertainment", umbrella: "rest" },
+    { name: "other", umbrella: "other" }
+  ],
+
+  timeZone: "America/Chicago",
+  learnedRules: {},
+
+  pieRange: "1d",
+  showCategoryTable: true,
+  pairsCollapsed: false,
+
+  focusPolicy: {
+    enabled: true,
+    remindOnCategories: ["social", "entertainment"],
+    softAfterMin: 5, hardAfterMin: 15, cooldownMin: 10, dailyMax: 8
+  }
+};
+
+/* ===== Runtime ===== */
+let state = { currentTabId: null, currentCategory: "other", lastSwitchTs: Date.now(), currentDomain: "unknown" };
+let remindState = { lastDayKey: null, lastReminderTs: 0, reminderCountToday: 0 };
+
+const CACHE_TTL_MS = 10 * 60 * 1000;
+let domainCache = Object.create(null);
+
+/* ===== Storage & migration ===== */
+function migrateConfig(cfg) {
+  if (!Array.isArray(cfg.categoriesConfig)) {
+    const base = [
+      { name: "work", umbrella: "work" },
+      { name: "study", umbrella: "work" },
+      { name: "utility", umbrella: "work" },
+      { name: "social", umbrella: "rest" },
+      { name: "entertainment", umbrella: "rest" },
+      { name: "other", umbrella: "other" }
+    ];
+    const extra = Array.isArray(cfg.customCategories) ? cfg.customCategories.map(c => ({ name: c.name, umbrella: c.umbrella })) : [];
+    const out = [...base];
+    for (const x of extra) {
+      if (x?.name && !out.find(y => y.name.toLowerCase() === x.name.toLowerCase())) {
+        out.push({ name: x.name, umbrella: x.umbrella || "other" });
+      }
+    }
+    cfg.categoriesConfig = out;
+  }
+  return cfg;
+}
+function getSettings() {
+  return new Promise((res) => {
+    chrome.storage.sync.get(DEFAULT_SETTINGS, (cfg) => {
+      cfg = migrateConfig({ ...DEFAULT_SETTINGS, ...cfg });
+      cfg.categories = (cfg.categoriesConfig || []).map(c => c.name);
+      res(cfg);
+    });
+  });
+}
+function storageGet(key) { return new Promise((res)=> chrome.storage.local.get([key], (o)=> res(o[key]))); }
+function storageSet(key, v) { return new Promise((res)=> chrome.storage.local.set({ [key]: v }, res)); }
+
+/* ===== Timezone & utils ===== */
+const TZ_ALIASES = { "china/ hangzhou":"asia/shanghai","china/shanghai":"asia/shanghai","beijing":"asia/shanghai","shanghai":"asia/shanghai","cst":"asia/shanghai","china standard time":"asia/shanghai","utc+8":"asia/shanghai","gmt+8":"asia/shanghai" };
+function normalizeTimeZone(tz) {
+  let s = (tz || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (TZ_ALIASES[s]) s = TZ_ALIASES[s];
+  if (s.includes("/")) { const [a,b]=s.split("/"); s = a.charAt(0).toUpperCase()+a.slice(1)+"/"+(b?b.charAt(0).toUpperCase()+b.slice(1):""); }
+  else if (s) { s = s.toUpperCase(); }
+  try { new Intl.DateTimeFormat("en-CA", { timeZone: s }).format(new Date()); return s || "UTC"; } catch { return "UTC"; }
+}
+function dayKeyLocal(tzRaw) {
+  const tz = normalizeTimeZone(tzRaw);
+  const d = new Date();
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year:"numeric", month:"2-digit", day:"2-digit" })
+    .formatToParts(d).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+function extractDomain(url) { try { return new URL(url).hostname; } catch { return "unknown"; } }
+function mapToUmbrella(fine, settings) {
+  const s = String(fine||"").toLowerCase();
+  const hit = (settings.categoriesConfig || []).find(c => (c.name||"").toLowerCase() === s);
+  return hit ? (hit.umbrella || "other") : "other";
+}
+
+/* ===== Settlement ===== */
+async function settleTime() {
+  try {
+    const now = Date.now();
+    const deltaSec = Math.max(0, Math.round((now - state.lastSwitchTs) / 1000));
+    state.lastSwitchTs = now;
+
+    const settings = await getSettings();
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const url = tab?.url || "unknown://";
+    const domain = extractDomain(url);
+    state.currentDomain = domain;
+
+    const dayKey = dayKeyLocal(settings.timeZone);
+    const key = `stats:${dayKey}`;
+    const cur = (await storageGet(key)) || { totalsUmbrella:{}, totalsFine:{}, byDomain:{} };
+
+    const fine = state.currentCategory || "other";
+    const umb = mapToUmbrella(fine, settings);
+
+    cur.totalsUmbrella[umb] = (Number(cur.totalsUmbrella[umb]) || 0) + deltaSec;
+    cur.totalsFine[fine] = (Number(cur.totalsFine[fine]) || 0) + deltaSec;
+
+    cur.byDomain[domain] = cur.byDomain[domain] || { category: fine, umbrella: umb, seconds: 0 };
+    cur.byDomain[domain].category = fine;
+    cur.byDomain[domain].umbrella = umb;
+    cur.byDomain[domain].seconds = (Number(cur.byDomain[domain].seconds) || 0) + deltaSec;
+
+    await storageSet(key, cur);
+
+    // rolling 24h events（供 1h 聚合）
+    const ev = (await storageGet("events")) || [];
+    ev.push({ ts: now, domain, umbrella: umb, seconds: deltaSec, category: fine });
+    const cutoff = now - 24 * 3600 * 1000;
+    await storageSet("events", ev.filter(e => (e?.ts || 0) >= cutoff).slice(-20000));
+  } catch (e) { console.error("[Working Mode] settleTime error:", e); }
+}
+
+/* ===== Apply & reclassify ===== */
+async function applyCategory(newFine, meta = {}) {
+  try {
+    if (newFine !== state.currentCategory) {
+      await settleTime();
+      state.currentCategory = newFine;
+      state.lastSwitchTs = Date.now();
+    }
+    chrome.runtime.sendMessage({ type:"CATEGORY_UPDATED", payload:{ category: state.currentCategory, cached: !!meta.cached, reason: meta.reason||"" }}, ()=>{ void chrome.runtime.lastError; });
+  } catch (e) { console.error("[Working Mode] applyCategory error:", e); }
+}
+
+async function reclassifyActiveTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab || !tab.url) return;
+
+    const domain = extractDomain(tab.url);
+    if (state.currentDomain && domain && domain !== state.currentDomain) {
+      await settleTime();
+    }
+    state.currentDomain = domain;
+
+    const hit = domainCache[domain];
+    if (hit && (Date.now() - hit.ts) < CACHE_TTL_MS) {
+      await applyCategory(hit.category, { cached: true, reason: "cache" });
+      return;
+    }
+
+    const settings = await getSettings();
+    const result = await classifyPage({ url: tab.url, title: tab.title || "" }, settings);
+
+    const validNames = new Set((settings.categoriesConfig || []).map(c => c.name.toLowerCase()));
+    let fine = String(result?.category || "other");
+    if (!validNames.has(fine.toLowerCase())) {
+      if (validNames.has("entertainment") && /youtube|netflix|bilibili|twitch|iqiyi|youku/i.test(tab.url)) fine = "entertainment";
+      else if (validNames.has("social") && /(twitter|x\.com|weibo|reddit|facebook|instagram|tiktok)/i.test(tab.url)) fine = "social";
+      else if (validNames.has("work") && /(docs\.google|drive\.google|notion|confluence|jira|github|gitlab|figma|slack|linear)/i.test(tab.url)) fine = "work";
+      else if (validNames.has("study") && /(wikipedia|arxiv|khanacademy|coursera|udemy|edx|brilliant)/i.test(tab.url)) fine = "study";
+      else if (validNames.has("utility") && /(mail\.google|outlook\.live|calendar\.google|maps\.google|bank|alipay|paypal|wise\.com)/i.test(tab.url)) fine = "utility";
+      else fine = "other";
+    }
+
+    domainCache[domain] = { category: fine, ts: Date.now() };
+
+    const sr = result?.suggest_rule;
+    const conf = Number(result?.confidence || 0);
+    if (sr?.apply === true && sr?.domain && sr?.category && conf >= 0.9) {
+      try {
+        const s2 = await getSettings();
+        const learned = { ...(s2.learnedRules || {}) };
+        learned[sr.domain] = sr.category;
+        await new Promise(r => chrome.storage.sync.set({ learnedRules: learned }, r));
+      } catch {}
+    }
+
+    await applyCategory(fine, { cached: false, reason: result?.reason || "" });
+  } catch (e) { console.error("[Working Mode] reclassifyActiveTab error:", e); }
+}
+
+/* ===== Focus reminders, alarms, lifecycle ===== */
+async function maybeCheckFocusReminder(settings) {
+  try {
+    const fp = settings.focusPolicy || {};
+    if (!fp.enabled) return;
+
+    const dk = dayKeyLocal(settings.timeZone);
+    if (remindState.lastDayKey !== dk) { remindState = { lastDayKey: dk, lastReminderTs: 0, reminderCountToday: 0 }; }
+    if (remindState.reminderCountToday >= (fp.dailyMax ?? 8)) return;
+
+    const cat = state.currentCategory;
+    if (!Array.isArray(fp.remindOnCategories) || !fp.remindOnCategories.includes(cat)) return;
+
+    const sinceSwitchSec = Math.max(0, Math.round((Date.now() - state.lastSwitchTs) / 1000));
+    const cooldownSec = (fp.cooldownMin ?? 10) * 60;
+    const softSec = (fp.softAfterMin ?? 5) * 60;
+    const hardSec = (fp.hardAfterMin ?? 15) * 60;
+
+    if (Date.now() - remindState.lastReminderTs < cooldownSec * 1000) return;
+    const notify = (title, message) => {
+      try { chrome.notifications.create({ type:"basic", iconUrl:"assets/icon-128.png", title, message, priority:1 }, () => { void chrome.runtime.lastError; }); } catch {}
+    };
+    if (sinceSwitchSec >= hardSec) notify("Focus reminder (hard)", `You have been on "${cat}" for ${Math.floor(sinceSwitchSec/60)} minutes.`);
+    else if (sinceSwitchSec >= softSec) notify("Focus reminder", `You have been on "${cat}" for ${Math.floor(sinceSwitchSec/60)} minutes.`);
+    remindState.lastReminderTs = Date.now(); remindState.reminderCountToday += 1;
+  } catch (e) { console.error("[Working Mode] focus reminder error:", e); }
+}
+
+async function startAlarms() {
+  try {
+    const settings = await getSettings();
+    if (!settings.enabled) return;
+    await chrome.alarms.clear("working-mode-tick");
+    const p = Math.max(1, Number(settings.intervalMinutes) || 5);
+    chrome.alarms.create("working-mode-tick", { periodInMinutes: p });
+    console.log("[Working Mode] alarm started, period(min) =", p);
+  } catch (e) { console.error("[Working Mode] startAlarms error:", e); }
+}
+function stopAlarms(){ chrome.alarms.clear("working-mode-tick", ()=> console.log("[Working Mode] alarm cleared")); }
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  (async () => {
+    try {
+      if (alarm?.name !== "working-mode-tick") return;
+      const settings = await getSettings();
+      if (!settings.enabled) return;
+      await settleTime();
+      await maybeCheckFocusReminder(settings);
+    } catch (e) { console.error("[Working Mode] onAlarm error:", e); }
+  })();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.sync.get(DEFAULT_SETTINGS, (cfg) => {
+    cfg = migrateConfig({ ...DEFAULT_SETTINGS, ...cfg });
+    const fixedTZ = normalizeTimeZone(cfg.timeZone || DEFAULT_SETTINGS.timeZone);
+    chrome.storage.sync.set({ ...cfg, timeZone: fixedTZ }, () => {
+      console.log("[Working Mode] settings initialized.");
+      startAlarms();
+    });
+  });
+});
+chrome.runtime.onStartup.addListener(()=>{ startAlarms(); });
+chrome.storage.onChanged.addListener((changes, area) => {
+  try {
+    if (area === "sync" && changes.enabled) { if (changes.enabled.newValue) startAlarms(); else stopAlarms(); }
+    if (area === "sync" && changes.timeZone) {
+      const v = normalizeTimeZone(changes.timeZone.newValue);
+      if (v !== changes.timeZone.newValue) chrome.storage.sync.set({ timeZone: v }, ()=>{});
+    }
+  } catch (e) { console.error("[Working Mode] storage.onChanged error:", e); }
+});
+
+/* ===== Auto reclassify on tab changes ===== */
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  (async () => { try { state.currentTabId = tabId; await reclassifyActiveTab(); } catch (e) { console.error(e); } })();
+});
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  (async () => { try {
+    if (tab?.active && (info.status === "complete" || info.url)) {
+      state.currentTabId = tabId;
+      await reclassifyActiveTab();
+    }
+  } catch (e) { console.error(e); } })();
+});
+
+/* ===== Aggregations ===== */
+async function aggregateFineTotals(range, settings) {
+  const totalsFine = Object.create(null);
+  const now = Date.now();
+
+  if (range === "1h") {
+    const ev = (await storageGet("events")) || [];
+    const cutoff = now - 3600 * 1000;
+    for (const e of ev) {
+      if ((e?.ts || 0) >= cutoff && e.category && Number(e.seconds)) {
+        totalsFine[e.category] = (totalsFine[e.category] || 0) + Number(e.seconds);
+      }
+    }
+    return totalsFine;
+  }
+
+  const days = range === "1d" ? 1 : range === "1w" ? 7 : range === "1mo" ? 30 : 365;
+  const tz = normalizeTimeZone(settings.timeZone);
+  for (let i = 0; i < days; i++) {
+    const dt = new Date(now - i * 86400 * 1000);
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year:"numeric", month:"2-digit", day:"2-digit" })
+      .formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+    const key = `stats:${parts.year}-${parts.month}-${parts.day}`;
+    const cur = (await storageGet(key)) || null;
+    if (cur?.totalsFine) {
+      for (const [k,v] of Object.entries(cur.totalsFine)) {
+        totalsFine[k] = (totalsFine[k] || 0) + Number(v || 0);
+      }
+    }
+  }
+  return totalsFine;
+}
+
+async function aggregateTopDomainPairs(range, settings, limit = 10) {
+  const now = Date.now();
+  const buckets = Object.create(null); // key domain|fine -> {seconds, umbrella}
+
+  if (range === "1h") {
+    const ev = (await storageGet("events")) || [];
+    const cutoff = now - 3600 * 1000;
+    for (const e of ev) {
+      if ((e?.ts || 0) >= cutoff && e.domain && e.category && Number(e.seconds)) {
+        const umb = e.umbrella || mapToUmbrella(e.category, settings);
+        const key = `${e.domain}|${e.category}`;
+        const prev = buckets[key] || { seconds:0, umbrella: umb };
+        prev.seconds += Number(e.seconds);
+        prev.umbrella = umb;
+        buckets[key] = prev;
+      }
+    }
+  } else {
+    const days = range === "1d" ? 1 : range === "1w" ? 7 : range === "1mo" ? 30 : 365;
+    const tz = normalizeTimeZone(settings.timeZone);
+    for (let i = 0; i < days; i++) {
+      const dt = new Date(now - i * 86400 * 1000);
+      const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year:"numeric", month:"2-digit", day:"2-digit" })
+        .formatToParts(dt).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+      const key = `stats:${parts.year}-${parts.month}-${parts.day}`;
+      const cur = (await storageGet(key)) || null;
+      if (cur?.byDomain) {
+        for (const [domain, v] of Object.entries(cur.byDomain)) {
+          const fine = v.category || "other";
+          const umb = v.umbrella || mapToUmbrella(fine, settings);
+          const k = `${domain}|${fine}`;
+          const prev = buckets[k] || { seconds:0, umbrella: umb };
+          prev.seconds += Number(v.seconds || 0);
+          prev.umbrella = umb;
+          buckets[k] = prev;
+        }
+      }
+    }
+  }
+
+  const arr = Object.entries(buckets).map(([k, val])=>{
+    const [domain, fine] = k.split("|");
+    return { domain, fine, umbrella: val.umbrella, seconds: val.seconds };
+  });
+  arr.sort((a,b)=> (b.seconds||0) - (a.seconds||0));
+  return arr.slice(0, limit);
+}
+
+/* ===== Messages ===== */
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      if (msg?.type === "GET_TODAY_STATS") {
+        const settings = await getSettings();
+        const key = `stats:${dayKeyLocal(settings.timeZone)}`;
+        const data = (await storageGet(key)) || { totalsUmbrella:{}, totalsFine:{}, byDomain:{} };
+        const umb = mapToUmbrella(state.currentCategory, settings);
+        sendResponse({
+          ok:true, data,
+          category: state.currentCategory,
+          umbrella: umb,
+          lastSwitchTs: state.lastSwitchTs,
+          currentDomain: state.currentDomain
+        });
+      }
+      else if (msg?.type === "GET_STATS_RANGE_FINE") {
+        const settings = await getSettings();
+        const range = (msg.range || settings.pieRange || "1d");
+        const totalsFineRaw = await aggregateFineTotals(range, settings);
+
+        // —— 补零：把 categoriesConfig 里的所有 fine 都补齐 —— //
+        const totalsFine = {};
+        const categoriesMeta = []; // [{name, umbrella}]
+        for (const c of (settings.categoriesConfig || [])) {
+          const name = c.name;
+          totalsFine[name] = Number(totalsFineRaw?.[name] || 0);
+          categoriesMeta.push({ name, umbrella: c.umbrella || "other" });
+        }
+
+        sendResponse({ ok:true, totalsFine, range, categoriesMeta });
+      }
+      else if (msg?.type === "GET_TOP_DOMAIN_PAIRS_RANGE") {
+        const settings = await getSettings();
+        const range = (msg.range || settings.pieRange || "1d");
+        const limit = Math.max(1, Math.min(50, Number(msg.limit || 10)));
+        const topDomainPairs = await aggregateTopDomainPairs(range, settings, limit);
+        sendResponse({ ok:true, topDomainPairs, range });
+      }
+      else if (msg?.type === "SET_ENABLED") {
+        await new Promise(r => chrome.storage.sync.set({ enabled: !!msg.value }, r));
+        if (msg.value) startAlarms(); else stopAlarms();
+        sendResponse({ ok:true });
+      }
+      else if (msg?.type === "RECLASSIFY_NOW") {
+        await reclassifyActiveTab();
+        sendResponse({ ok:true, category: state.currentCategory });
+      }
+      else if (msg?.type === "CLEAR_LEARNED_RULE" && msg.domain) {
+        const s = await getSettings();
+        const learned = { ...(s.learnedRules || {}) };
+        delete learned[msg.domain];
+        await new Promise(r => chrome.storage.sync.set({ learnedRules: learned }, r));
+        delete domainCache[msg.domain];
+        sendResponse({ ok:true });
+      }
+      else if (msg?.type === "GET_UI_PREFS") {
+        const s = await getSettings();
+        sendResponse({ ok:true, prefs: {
+          pieRange: s.pieRange || "1d",
+          showCategoryTable: s.showCategoryTable !== false,
+          pairsCollapsed: !!s.pairsCollapsed
+        }});
+      }
+      else if (msg?.type === "SET_UI_PREFS") {
+        const prefs = msg.prefs || {};
+        chrome.storage.sync.get(DEFAULT_SETTINGS, (cfg) => {
+          cfg = migrateConfig({ ...DEFAULT_SETTINGS, ...cfg });
+          chrome.storage.sync.set({ ...cfg, ...prefs }, () => sendResponse({ ok:true }));
+        });
+      }
+      else if (msg?.type === "CLEAR_ALL_DATA") {
+        chrome.storage.local.get(null, async (all) => {
+          const toRemove = Object.keys(all).filter(k => k.startsWith("stats:"));
+          toRemove.push("events");
+          chrome.storage.local.remove(toRemove, async () => {
+            state.lastSwitchTs = Date.now();
+            sendResponse({ ok:true, cleared: toRemove.length });
+          });
+        });
+      }
+      else {
+        sendResponse({ ok:false, error:"unknown message type" });
+      }
+    } catch (e) {
+      console.error("[Working Mode] onMessage handler error:", e);
+      sendResponse({ ok:false, error:String(e) });
+    }
+  })();
+  return true;
+});

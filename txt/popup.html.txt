@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Working Mode</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { width: 340px; padding: 12px; font-family: system-ui, sans-serif; }
+    .row { display:flex; align-items:center; justify-content:space-between; margin:8px 0; }
+    .pill { padding:4px 8px; border-radius:999px; font-weight:600; }
+    .work { background:#e6f4ea; }
+    .rest { background:#fde2e1; }
+    .other { background:#eef3ff; }
+    table { width:100%; border-collapse: collapse; margin-top:8px; }
+    th, td { border-bottom:1px solid #eee; padding:6px; text-align:left; font-size:12px; }
+    .btn { padding:6px 10px; border:1px solid #ddd; border-radius:8px; background:#fff; cursor:pointer; }
+    .btn:hover { background:#f6f6f6; }
+    .muted { color:#666; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <div>
+      <div style="font-weight:700;">Working Mode</div>
+      <div class="muted">Gemini 分类 + 定时提醒 + 番茄统计</div>
+    </div>
+    <button id="toggle" class="btn">加载中…</button>
+  </div>
+
+  <div class="row">
+    <div>当前分类：</div>
+    <div id="current" class="pill other">other</div>
+  </div>
+
+  <div class="row">
+    <button id="recheck" class="btn">立即重判</button>
+    <a href="options.html" target="_blank" class="btn">设置</a>
+  </div>
+
+  <h3>今日占比</h3>
+  <canvas id="pie" width="160" height="160" style="width:100%;max-width:320px;height:auto;"></canvas>
+  <div id="legend" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"></div>
+  
+
+  <table id="table">
+    <thead><tr><th>域名</th><th>work</th><th>rest</th><th>other</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="domainList"></div>
+
+  <div class="row" style="margin-top:10px">
+    <button id="export" class="btn">Export Today(JSON)</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

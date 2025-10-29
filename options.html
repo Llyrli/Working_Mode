@@ -1,0 +1,121 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Working Mode - Setting</title>
+  <style>
+    body { max-width: 860px; margin: 20px auto; padding: 0 12px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#111827; }
+    h1 { font-size:22px; margin-bottom:12px; font-weight:800; }
+    h2 { font-size:16px; margin:14px 0 8px; }
+    .section { background:#e9effa; border:1px solid #d6e0f3; border-radius:12px; padding:12px; margin-bottom:12px; }
+
+    .row { display:flex; gap:12px; align-items:center; margin:8px 0; }
+    .label { width:160px; color:#334155; font-size:13px; font-weight:600; white-space: nowrap; }
+    .input { flex:1; display:flex; align-items:center; position:relative; }
+    input[type="text"], input[type="password"], select, input[type="number"] { width:100%; padding:8px 10px; border:1px solid #d0d7e5; border-radius:8px; font-size:13px; background:#fff; }
+    .eye { position:absolute; right:8px; top:50%; transform:translateY(-50%); cursor:pointer; font-size:14px; color:#6b7280; user-select:none; }
+    .subtle { color:#6b7280; font-size:12px; }
+    .btn { padding:6px 10px; border:1px solid #cfd6e4; border-radius:8px; background:#fff; cursor:pointer; font-size:13px; }
+    .btn:hover { background:#f6f7fb; }
+    .btn-sm { padding:2px 8px; font-size:12px; border-radius:6px; }
+
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    @media (min-width:780px){ .grid { grid-template-columns: repeat(4, 1fr); } }
+
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { border-bottom:1px solid #e6eaf2; padding:6px 8px; text-align:left; }
+    th { background:#f1f5fb; }
+
+    .cat-chip { display:inline-block; position:relative; padding:2px 6px 6px 6px; border-radius:6px; }
+    .cat-chip .bar { position:absolute; left:6px; right:6px; bottom:2px; height:4px; border-radius:3px; }
+  </style>
+</head>
+<body>
+  <h1>Working Mode Setting</h1>
+
+  <div class="section">
+    <div class="row">
+      <div class="label">Gemini API Key</div>
+      <div class="input">
+        <input id="apiKey" type="password" placeholder="Copy your Gemini API Key here" />
+        <span id="eye" class="eye" title="显示/隐藏">👁️</span>
+      </div>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="label">Model</div>
+        <div class="input"><input id="model" type="text" placeholder="gemini-2.0-flash" /></div>
+      </div>
+      <div>
+        <div class="label">Rest Alarm Interval (min)</div>
+        <div class="input"><input id="interval" type="number" min="1" step="1" placeholder="Set your own rest interval here"  /></div>
+      </div>
+      <div>
+        <div class="label">Time Zone</div>
+        <div class="input">
+          <select id="timezone">
+            <option value="America/Chicago">America/Chicago</option>
+            <option value="America/Los_Angeles">America/Los_Angeles</option>
+            <option value="America/New_York">America/New_York</option>
+            <option value="Europe/London">Europe/London</option>
+            <option value="Europe/Berlin">Europe/Berlin</option>
+            <option value="Asia/Shanghai">Asia/Shanghai</option>
+            <option value="Asia/Tokyo">Asia/Tokyo</option>
+            <option value="UTC">UTC</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <div class="label">Pie Stats Range</div>
+        <div class="input">
+          <select id="pieRange">
+            <option value="1h">1 hr</option>
+            <option value="1d">1 day</option>
+            <option value="1mo">1 month</option>
+            <option value="1y">1 year</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <button id="save" class="btn">Save</button>
+      <span id="saveStatus" class="subtle"></span>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Customize/Manage Categories</h2>
+    <div class="subtle" style="margin-bottom:8px;">Edit umbrella, Delete or add categories; assign colors for each category.</div>
+
+    <table>
+      <thead><tr><th style="width:40%;">Category</th><th style="width:30%;">Umbrella</th><th>操作</th></tr></thead>
+      <tbody id="catBody"></tbody>
+    </table>
+
+    <div class="row" style="margin-top:10px;">
+      <div class="label">add a category</div>
+      <div class="input"><input id="newCatName" type="text" placeholder="example: email_issue" /></div>
+      <div class="input" style="max-width:200px;">
+        <select id="newCatUmb">
+          <option value="work">work</option>
+          <option value="rest">rest</option>
+          <option value="other">other</option>
+        </select>
+      </div>
+      <button id="addCat" class="btn-sm">Add</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="row">
+      <div class="label">Clear all data</div>
+      <div class="input">
+        <button id="clearData" class="btn">Clear all statistical data</button>
+      </div>
+    </div>
+    <div class="subtle">After clearing, pie and tables will accumulate from zero.</div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

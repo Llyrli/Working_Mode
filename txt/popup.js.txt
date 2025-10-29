@@ -1,0 +1,268 @@
+// popup.js — fine pie uses all categories; legend groups by umbrella and lists zero-time categories.
+// Top domain list unchanged.
+
+async function safeSendMessage(msg, { retries = 2, delayMs = 250 } = {}) {
+  for (let i = 0; i <= retries; i++) {
+    const res = await new Promise((resolve) => {
+      try { chrome.runtime.sendMessage(msg, (resp) => resolve(resp || { ok: false })); }
+      catch (e) { resolve({ ok:false, _err:String(e) }); }
+    });
+    if (res && (res.ok || res.data || res.totalsFine || res.categoriesMeta || res.topDomainPairs || res.prefs)) return res;
+    if (i < retries) await new Promise(r => setTimeout(r, delayMs));
+  }
+  return { ok:false, _err:"receiving end not ready" };
+}
+
+/* Utils & colors */
+function secToMinStr(s){ s = Number(s)||0; const m=Math.floor(s/60), r=s%60; return `${m}m ${r}s`; }
+function hashColor(name){ let h=0; for(let i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))>>>0; const hue=h%360; return `hsl(${hue} 55% 55%)`; }
+const FIXED_COLORS = { work:"#1f8f3e", study:"#2b6cb0", utility:"#b08b2b", social:"#cc7a00", entertainment:"#c53030", other:"#718096" };
+function colorFor(cat){ return FIXED_COLORS[cat] || hashColor(cat); }
+
+/* Fine pie (draw slices for >0; legend lists ALL) */
+function drawFinePieAll(totalsFine, categoriesMeta, legendRealtimeAdd = { cat:null, addSec:0 }) {
+  const canvas = document.getElementById("pie");
+  const legend = document.getElementById("legend");
+  if (!canvas || !legend) return;
+
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // half size visually (crisp)
+  canvas.style.width = Math.round(W/2) + "px";
+  canvas.style.height = Math.round(H/2) + "px";
+
+  // realtime add into a local copy (for legend + sum)
+  const totals = { ...(totalsFine || {}) };
+  if (legendRealtimeAdd.cat && legendRealtimeAdd.addSec > 0) {
+    totals[legendRealtimeAdd.cat] = (totals[legendRealtimeAdd.cat] || 0) + legendRealtimeAdd.addSec;
+  }
+
+  // sum for percentage (including zeros will not change)
+  const sum = Object.values(totals).reduce((a,v)=>a+Number(v||0), 0);
+
+  // draw pie (only >0)
+  const cx = W/2, cy = H/2, R = Math.min(W,H)/2 - 10;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI*2); ctx.strokeStyle="#edf2f7"; ctx.lineWidth=14; ctx.stroke();
+  let start = -Math.PI/2;
+  const positive = Object.entries(totals).filter(([,v]) => Number(v) > 0).sort((a,b)=>b[1]-a[1]);
+  for (const [k,v] of positive) {
+    const angle = (v / (sum || 1)) * Math.PI * 2;
+    if (angle <= 0) continue;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,R,start,start+angle); ctx.closePath();
+    ctx.fillStyle = colorFor(k); ctx.fill();
+    start += angle;
+  }
+  if (sum === 0) {
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI*2);
+    ctx.strokeStyle = "#e2e8f0"; ctx.lineWidth = 14; ctx.stroke();
+  }
+
+  // LEGEND: group by umbrella; list all categories (even 0)
+  legend.innerHTML = "";
+  const groups = new Map(); // umb -> [{name,sec}]
+  for (const meta of (categoriesMeta || [])) {
+    const umb = meta.umbrella || "other";
+    if (!groups.has(umb)) groups.set(umb, []);
+    const sec = Number(totals[meta.name] || 0);
+    groups.get(umb).push({ name: meta.name, sec });
+  }
+  // sort groups by a default order
+  const orderUmb = ["work","rest","other"];
+  const sortedUmb = Array.from(groups.keys()).sort((a,b)=>{
+    const ia = orderUmb.indexOf(a); const ib = orderUmb.indexOf(b);
+    return (ia<0?99:ia) - (ib<0?99:ib);
+  });
+
+  for (const umb of sortedUmb) {
+    const header = document.createElement("div");
+    header.style.margin = "4px 0 2px";
+    header.innerHTML = `<strong>${umb}</strong>`;
+    legend.appendChild(header);
+
+    const list = groups.get(umb).sort((a,b)=> b.sec - a.sec || a.name.localeCompare(b.name));
+    for (const item of list) {
+      const percent = sum > 0 ? (item.sec / sum * 100) : 0;
+      const row = document.createElement("div");
+      row.style.display = "flex"; row.style.alignItems = "center"; row.style.gap = "6px";
+      row.innerHTML = `
+        <span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${colorFor(item.name)};"></span>
+        <span style="font-size:12px;">${item.name}: ${secToMinStr(item.sec)} (${percent.toFixed(0)}%)</span>
+      `;
+      legend.appendChild(row);
+    }
+  }
+}
+
+/* Domain Top list (unchanged from previous delivered version) */
+function ensureDomainPairsSection() {
+  let listBox = document.getElementById("domainPairs");
+  let header = document.getElementById("domainPairsHeader");
+  let toggle = document.getElementById("domainPairsToggle");
+
+  if (!header) {
+    header = document.createElement("div");
+    header.id = "domainPairsHeader";
+    header.style.display = "flex";
+    header.style.alignItems = "center";
+    header.style.justifyContent = "space-between";
+    header.style.marginTop = "8px";
+    header.innerHTML = `<strong>Top domains by category</strong><button id="domainPairsToggle" style="padding:2px 8px;">▾ Collapse</button>`;
+    const anchor = document.getElementById("table");
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(header, anchor);
+    else document.body.appendChild(header);
+  }
+  toggle = document.getElementById("domainPairsToggle");
+
+  if (!listBox) {
+    const anchor = document.getElementById("table");
+    listBox = document.createElement("div");
+    listBox.id = "domainPairs";
+    if (anchor && anchor.parentNode) {
+      anchor.style.display = "none";
+      anchor.parentNode.insertBefore(listBox, anchor.nextSibling);
+    } else document.body.appendChild(listBox);
+  }
+  return { header, toggle, listBox };
+}
+
+let realtimeTimer = null;
+let uiPrefs = { pieRange: "1d", showCategoryTable: true, pairsCollapsed: false };
+
+function renderHeaderRealtime(base, elapsedSec) {
+  const cur = document.getElementById("current");
+  if (cur) { cur.textContent = base.category; cur.className = `pill ${base.umbrella}`; }
+  const totalsRT = { ...(base.totalsUmbrella||{}) };
+  totalsRT[base.umbrella] = (totalsRT[base.umbrella]||0) + elapsedSec;
+  const tDiv = document.getElementById("totals");
+  if (tDiv) {
+    const parts = [];
+    ["work","rest","other"].forEach(k => { if (k in totalsRT) parts.push(`${k}: ${secToMinStr(totalsRT[k]||0)}`); });
+    tDiv.textContent = parts.join("  ·  ");
+  }
+}
+
+function renderDomainPairs(topDomainPairs) {
+  const { header, toggle, listBox } = ensureDomainPairsSection();
+  header.style.display = uiPrefs.showCategoryTable ? "" : "none";
+  listBox.style.display = uiPrefs.showCategoryTable ? "" : "none";
+  if (!uiPrefs.showCategoryTable) return;
+
+  const setCollapsed = (collapsed) => {
+    uiPrefs.pairsCollapsed = !!collapsed;
+    listBox.style.display = collapsed ? "none" : "";
+    if (toggle) toggle.textContent = collapsed ? "▸ Expand" : "▾ Collapse";
+  };
+  if (toggle && !toggle._bound) {
+    toggle._bound = true;
+    toggle.addEventListener("click", async ()=>{
+      setCollapsed(!uiPrefs.pairsCollapsed);
+      await safeSendMessage({ type:"SET_UI_PREFS", prefs:{ pairsCollapsed: uiPrefs.pairsCollapsed } });
+    });
+  }
+  setCollapsed(uiPrefs.pairsCollapsed);
+
+  if (listBox && !uiPrefs.pairsCollapsed) {
+    listBox.innerHTML = "";
+    const arr = (topDomainPairs||[]).slice(0,10);
+    if (arr.length === 0) { listBox.innerHTML = `<div class="muted">No domain data for selected range.</div>`; return; }
+    for (const item of arr) {
+      const row = document.createElement("div");
+      row.style.display = "flex"; row.style.gap = "10px"; row.style.alignItems = "center"; row.style.margin = "4px 0";
+      row.innerHTML = `
+        <code style="min-width:220px;display:inline-block">${item.domain}</code>
+        <span class="pill ${item.umbrella || "other"}">${item.umbrella || "other"}</span>
+        <code style="min-width:140px;display:inline-block">${item.fine}</code>
+        <span class="muted">${secToMinStr(item.seconds || 0)}</span>
+      `;
+      listBox.appendChild(row);
+    }
+  }
+}
+
+async function refresh() {
+  const prefsRes = await safeSendMessage({ type:"GET_UI_PREFS" });
+  if (prefsRes?.ok && prefsRes.prefs) uiPrefs = { ...uiPrefs, ...prefsRes.prefs };
+
+  const baseRes = await safeSendMessage({ type:"GET_TODAY_STATS" });
+  if (!baseRes?.ok) return;
+  const { data, category, umbrella, lastSwitchTs } = baseRes;
+  const base = { totalsUmbrella: { ...(data.totalsUmbrella||{}) }, category, umbrella, lastSwitchTs };
+
+  // fine pie (range) + legend realtime add (needs categoriesMeta to show ALL)
+  const pieRes = await safeSendMessage({ type:"GET_STATS_RANGE_FINE", range: uiPrefs.pieRange || "1d" });
+  const totalsFine = pieRes?.ok ? (pieRes.totalsFine||{}) : {};
+  const categoriesMeta = pieRes?.ok ? (pieRes.categoriesMeta||[]) : [];
+  const elapsedNow = Math.max(0, Math.floor((Date.now() - base.lastSwitchTs) / 1000));
+  drawFinePieAll(totalsFine, categoriesMeta, { cat: base.category, addSec: elapsedNow });
+
+  // top domain pairs
+  const domRes = await safeSendMessage({ type:"GET_TOP_DOMAIN_PAIRS_RANGE", range: uiPrefs.pieRange || "1d", limit: 10 });
+  renderDomainPairs(domRes?.ok ? (domRes.topDomainPairs||[]) : []);
+
+  // realtime header
+  if (realtimeTimer) clearInterval(realtimeTimer);
+  renderHeaderRealtime(base, 0);
+  realtimeTimer = setInterval(()=>{
+    const elapsed = Math.max(0, Math.floor((Date.now() - base.lastSwitchTs) / 1000));
+    renderHeaderRealtime(base, elapsed);
+  }, 1000);
+}
+
+/* Export buttons preserved */
+function secToMinStrExport(s){ return secToMinStr(s); } // keep same formatting
+async function exportTxt() {
+  const r = await safeSendMessage({ type:"GET_TODAY_STATS" });
+  if (!r?.ok) return;
+  const { data } = r;
+  const lines = [];
+  lines.push("Working Mode — Today"); lines.push("");
+  lines.push("[Umbrella totals]");
+  for (const k of ["work","rest","other"]) if (k in (data.totalsUmbrella||{})) lines.push(`${k}: ${secToMinStrExport(data.totalsUmbrella[k]||0)}`);
+  lines.push(""); lines.push("[By domain]");
+  const entries = Object.entries(data.byDomain || {}).sort((a,b)=> (b[1].seconds||0) - (a[1].seconds||0));
+  for (const [domain, v] of entries) lines.push(`${domain} — ${v.category} (${v.umbrella}) — ${secToMinStrExport(v.seconds||0)}`);
+  const blob = new Blob([lines.join("\n")], { type:"text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob); const a = document.createElement("a");
+  a.href = url; a.download = `working-mode-${new Date().toISOString().slice(0,10)}.txt`; a.click(); URL.revokeObjectURL(url);
+}
+async function exportCsv() {
+  const r = await safeSendMessage({ type:"GET_TODAY_STATS" });
+  if (!r?.ok) return;
+  const { data } = r;
+  const rows = [];
+  rows.push(["domain","category","umbrella","seconds","human_readable"]);
+  for (const [domain, v] of Object.entries(data.byDomain || {})) {
+    const s = Number(v.seconds || 0);
+    rows.push([domain, v.category || "", v.umbrella || "", s, secToMinStrExport(s)]);
+  }
+  const csv = rows.map(r => r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type:"text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob); const a = document.createElement("a");
+  a.href = url; a.download = `working-mode-${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(url);
+}
+
+/* Toggles & init */
+async function loadEnabled(){ return new Promise(res => chrome.storage.sync.get(["enabled"], s => res(!!s.enabled))); }
+async function setEnabled(v){ await safeSendMessage({ type:"SET_ENABLED", value: !!v }); }
+
+document.getElementById("recheck")?.addEventListener("click", async ()=>{ await safeSendMessage({ type:"RECLASSIFY_NOW" }); refresh(); });
+document.getElementById("exportTxt")?.addEventListener("click", exportTxt);
+document.getElementById("exportCsv")?.addEventListener("click", exportCsv);
+const legacyExportBtn = document.getElementById("export"); if (legacyExportBtn) legacyExportBtn.addEventListener("click", exportCsv);
+
+(async ()=>{
+  const btn = document.getElementById("toggle");
+  if (btn) {
+    const enabled = await loadEnabled();
+    btn.textContent = enabled ? "Enabled" : "Disabled";
+    btn.onclick = async () => {
+      const cur = !(await loadEnabled());
+      await setEnabled(cur);
+      btn.textContent = cur ? "Enabled" : "Disabled";
+    };
+  }
+  refresh();
+  chrome.runtime.onMessage.addListener((msg)=>{ if (msg?.type === "CATEGORY_UPDATED") refresh(); });
+})();
