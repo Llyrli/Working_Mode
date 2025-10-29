@@ -135,5 +135,4 @@ Feel free to use, modify, and share with attribution.
 
 ---
 
-*(Add your own credits, badges, or screenshots below.)*
 
