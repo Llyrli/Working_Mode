@@ -1,6 +1,6 @@
 # 🧠 Working Mode — Smart Web Focus & Rest Tracker
 
-> A lightweight Chrome extension that classifies your browsing with Gemini AI, tracks focus time, and reminds you to take breaks with beautiful in-page modals.
+> A lightweight Chrome extension that classifies your browsing with Gemini AI, tracks focus time, and reminds you to take breaks from breaks :).
 
 ---
 
