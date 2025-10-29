@@ -84,4 +84,52 @@
 ---
 
 ## 🧩 File Structure
+├── manifest.json
+├── background.js # service worker (classification + rest alarm)
+├── classify.js # Gemini API call & heuristics
+├── content.js # in-page modal + toast
+├── popup.html / popup.js
+├── options.html / options.js
+├── icons/
+└── README.md
+
+
+---
+
+## 🪄 Customization Tips
+
+- To change the default interval or time zone, edit them in `Settings → Rest Alarm Interval / Time Zone`.  
+- Add new categories (e.g. `english_learning`) in the Customize section and assign an umbrella.  
+- Color codes auto-generate distinct hues but you can manually tweak them.
+
+---
+
+## 🧠 Tech Highlights
+
+- Chrome Extensions Manifest V3 + Modules  
+- Background alarms + content script communication  
+- Dynamic script injection (`chrome.scripting`) for blocked pages  
+- Local storage (sync & local) for persistent statistics  
+- Fallback system notifications ensuring rest alarm visibility
+
+---
+
+## 🧩 Troubleshooting
+
+| Symptom | Possible Cause | Fix |
+|----------|----------------|-----|
+| No rest modal shown | Page blocked content scripts | Working Mode auto-injects `content.js`; if still no popup, check the browser notification permission |
+| Stats not updating | Service worker sleeping | Extension auto-runs a 1-minute “kicker” alarm to keep tracking |
+| Gemini classification fails | Invalid API key or rate limit | Verify API key and model name in Settings |
+
+---
+
+## 📄 License
+
+MIT License © 2025 Li Zheng
+Feel free to use, modify, and share with attribution.
+
+---
+
+*(Add your own credits, badges, or screenshots below.)*
 
