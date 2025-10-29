@@ -31,7 +31,7 @@
 
 | Popup Panel | Settings Page | Rest Alarm Modal |
 |--------------|---------------|------------------|
-| ![popup](icons/popup.png) | ![settings](icons/options.png) | ![rest](icons/rest_alarm.png) |
+| ![popup](icons/popup.png) | ![settings](icons/setting.png) | ![rest](icons/rest_alarm.png) |
 
 *(Replace the placeholders above with your own images.)*
 
