@@ -1,4 +1,4 @@
-// background.js — rest-alarm modal with strong injection fallback + minute kicker
+// background.js — rest-alarm modal with snooze & disable + robust fallback
 import { classifyPage } from "./classify.js";
 
 /* ---------------- Defaults ---------------- */
@@ -12,7 +12,7 @@ const DEFAULT_SETTINGS = {
     { name: "study",         umbrella: "work" },
     { name: "utility",       umbrella: "work" },
     { name: "social",        umbrella: "rest" },
-    { name: "entertainment", umbrella: "rest" },
+    { name: "entertainment", Qumbrella: "rest" },
     { name: "other",         umbrella: "other" }
   ],
   timeZone: "America/Chicago",
@@ -150,56 +150,30 @@ async function reclassifyActiveTab() {
   } catch (e) { console.error("[Working Mode] reclassifyActiveTab error:", e); }
 }
 
-/* ---------------- Rest-alarm modal (强化兜底：注入→toast→系统通知) ---------------- */
+/* ---------------- Rest-alarm modal (renamed to avoid duplicate identifiers) ---------------- */
 async function presentRestModal(payload) {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab?.id) return;
-
-    // 1) 直接发给 content.js
     chrome.tabs.sendMessage(tab.id, { type: "SHOW_REST_MODAL", payload }, async () => {
       const err = chrome.runtime.lastError;
-      if (!err) return;
-
-      // 2) 动态注入 content.js 再尝试一次（需要 manifest 有 "scripting" 权限）
-      try {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
-        chrome.tabs.sendMessage(tab.id, { type: "SHOW_REST_MODAL", payload }, () => {
-          if (chrome.runtime.lastError) tryToastThenSystem(payload, tab.id);
-        });
-      } catch (e) {
-        // 注入失败（如 chrome:// 等特殊页面）
-        tryToastThenSystem(payload, tab.id);
+      if (err) {
+        // Fallback: system notification (ensures visibility)
+        const minutes = Math.floor((payload?.minutesOnRest ?? 0));
+        const threshold = payload?.thresholdMinutes ?? 5;
+        const iconUrl = chrome.runtime.getURL("icons/icon-128.png");
+        try {
+          await chrome.notifications.create({
+            type: "basic",
+            iconUrl,
+            title: "Rest Alarm",
+            message: `You have been on the rest page for ${minutes} minutes (threshold: ${threshold} minutes).`
+          });
+        } catch {}
       }
     });
-  } catch (e) {
-    console.warn("[Working Mode] presentRestModal error:", e);
-  }
+  } catch (e) { console.warn("[Working Mode] presentRestModal error:", e); }
 }
-
-function tryToastThenSystem(payload, tabId){
-  // 3) 页内 toast/通知
-  try {
-    chrome.tabs.sendMessage(
-      tabId,
-      { type: "SHOW_REST_TOAST", payload: { message: "已达到休息提醒阈值" } },
-      () => { void chrome.runtime.lastError; }
-    );
-  } catch {}
-  // 4) 系统通知（最后兜底）
-  try {
-    const minutes = Math.floor((payload?.minutesOnRest ?? 0));
-    const threshold = payload?.thresholdMinutes ?? 5;
-    const iconUrl = chrome.runtime.getURL("icons/icon-128.png");
-    chrome.notifications.create({
-      type: "basic",
-      iconUrl,
-      title: "Rest Alarm",
-      message: `You have been on the rest page for ${minutes} minutes (threshold: ${threshold} minutes).`
-    });
-  } catch {}
-}
-
 async function handleRestModalAction(action) {
   const now = Date.now();
   if (action === "closeOnce") {
@@ -227,6 +201,7 @@ async function maybeCheckFocusReminder(settings) {
     }
     if (remindState.reminderCountToday >= (fp.dailyMax ?? 8)) return;
 
+    // Only within "rest"
     const umb = mapToUmbrella(state.currentCategory, settings);
     if (umb !== "rest") return;
 
@@ -253,21 +228,16 @@ async function startAlarms() {
   try {
     const settings = await getSettings();
     await chrome.alarms.clear("working-mode-tick");
-    await chrome.alarms.clear("working-mode-kicker"); // 新增：每分钟心跳
-
     const p = Math.max(1, Number(settings.intervalMinutes) || 5);
     chrome.alarms.create("working-mode-tick", { periodInMinutes: p });
-    // 新增：每分钟唤醒一次，避免 service worker 挂起错过提醒
-    chrome.alarms.create("working-mode-kicker", { periodInMinutes: 1 });
-
-    console.log("[Working Mode] alarm started, period(min) =", p, "and kicker=1");
+    console.log("[Working Mode] alarm started, period(min) =", p);
   } catch (e) { console.error("[Working Mode] startAlarms error:", e); }
 }
-function stopAlarms(){ chrome.alarms.clear("working-mode-tick", ()=>{}); chrome.alarms.clear("working-mode-kicker", ()=>{}); }
+function stopAlarms(){ chrome.alarms.clear("working-mode-tick", ()=>{}); }
 
 chrome.alarms.onAlarm.addListener((alarm) => { (async () => {
   try {
-    if (alarm?.name !== "working-mode-tick" && alarm?.name !== "working-mode-kicker") return;
+    if (alarm?.name !== "working-mode-tick") return;
     const settings = await getSettings();
     if (!settings.enabled) return;
     await settleTime();

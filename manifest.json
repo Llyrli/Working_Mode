@@ -16,10 +16,12 @@
     "storage",
     "alarms",
     "tabs",
-    "notifications"
+    "notifications",
+    "scripting"
   ],
   "host_permissions": [
-    "https://generativelanguage.googleapis.com/*", "<all_urls>"
+    "https://generativelanguage.googleapis.com/*",
+    "<all_urls>"
   ],
   "content_scripts": [
     {

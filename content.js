@@ -64,7 +64,7 @@
     card.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif";
 
     const title = document.createElement("div");
-    title.textContent = "休息提醒";
+    title.textContent = "Rest Alarm";
     title.style.fontWeight = "800";
     title.style.fontSize = "16px";
     title.style.marginBottom = "8px";
@@ -73,7 +73,7 @@
     msg.style.fontSize = "13px";
     msg.style.lineHeight = "1.5";
     msg.style.marginBottom = "12px";
-    msg.textContent = `你已在“休息”页面停留约 ${minutesOnRest} 分钟（阈值 ${thresholdMinutes} 分钟）。`;
+    msg.textContent = `You have been on the rest page for ${minutesOnRest} minutes (threshold: ${thresholdMinutes} minutes).`;
 
     const btnRow = document.createElement("div");
     btnRow.style.display = "flex";
@@ -94,9 +94,9 @@
       return b;
     }
 
-    const closeOnce = mkBtn("关闭本次提醒");
-    const snooze30  = mkBtn("30 分钟不提醒");
-    const disable   = mkBtn("关闭 Rest Alarm");
+    const closeOnce = mkBtn("Close this reminder");
+    const snooze30  = mkBtn("30 minutes no reminder");
+    const disable   = mkBtn("Disable Rest Alarm");
 
     closeOnce.onclick = () => resolveAction("closeOnce");
     snooze30.onclick  = () => resolveAction("snooze30");
@@ -122,7 +122,7 @@
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg?.type === "SHOW_REST_TOAST") {
-      const text = msg?.payload?.message || "已达到休息提醒阈值";
+      const text = msg?.payload?.message || "Rest alarm threshold reached";
       showPageNotification(text);
     }
     if (msg?.type === "SHOW_REST_MODAL") {
